@@ -160,3 +160,14 @@ sys_getpriority(void)
 {
   return getpriority();
 }
+
+uint64
+sys_schedlog(void)
+{
+  uint64 addr;
+  int max;
+
+  argaddr(0, &addr);
+  argint(1, &max);
+  return schedlog_read(addr, max);
+}

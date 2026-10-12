@@ -91,6 +91,7 @@ int             killed(struct proc*);
 void            setkilled(struct proc*);
 int             setpriority(int);
 int             getpriority(void);
+int             schedlog_read(uint64, int);
 struct cpu*     mycpu(void);
 struct proc*    myproc();
 void            procinit(void);

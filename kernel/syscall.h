@@ -24,3 +24,4 @@
 #define SYS_debugctl 23
 #define SYS_setpriority 24
 #define SYS_getpriority 25
+#define SYS_schedlog 26

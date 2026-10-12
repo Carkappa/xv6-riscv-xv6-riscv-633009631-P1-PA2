@@ -46,3 +46,4 @@ entry("sync");
 entry("debugctl");
 entry("setpriority");
 entry("getpriority");
+entry("schedlog");

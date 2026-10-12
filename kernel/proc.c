@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "debug.h"
+#include "schedlog.h"
 
 struct cpu cpus[NCPU];
 
@@ -81,6 +82,68 @@ dequeue_highest(void)
   return p;
 }
 
+// The most recent dispatches, kept in memory so that scheduler()
+// never has to print. rec[] is a ring: dispatch number s lives in
+// rec[s % SCHEDLOG_NREC] until it is overwritten. User programs
+// read it with the schedlog() system call.
+struct {
+  struct spinlock lock;
+  uint next; // dispatch number of the next record
+  struct schedrec rec[SCHEDLOG_NREC];
+} schedlog;
+
+// Note that p is about to be given the CPU. p->lock must be held.
+static void
+schedlog_record(struct proc *p)
+{
+  struct schedrec *r;
+
+  acquire(&schedlog.lock);
+  r = &schedlog.rec[schedlog.next % SCHEDLOG_NREC];
+  r->seq = schedlog.next++;
+  r->tick = ticks;
+  r->pid = p->pid;
+  r->priority = p->priority;
+  release(&schedlog.lock);
+}
+
+// Copy up to max of the most recent dispatch records, oldest first,
+// to user address addr in the calling process.
+// Returns the number of records copied, or -1 on error.
+int
+schedlog_read(uint64 addr, int max)
+{
+  struct schedrec r;
+  uint seq, end, avail;
+  int n = 0;
+
+  if (max < 0)
+    return -1;
+
+  acquire(&schedlog.lock);
+  end = schedlog.next;
+  release(&schedlog.lock);
+
+  avail = end < SCHEDLOG_NREC ? end : SCHEDLOG_NREC;
+  if (max > avail)
+    max = avail;
+
+  // Copy one record at a time, so that the lock is never held
+  // across a copy to user space.
+  for (seq = end - max; seq != end; seq++) {
+    acquire(&schedlog.lock);
+    int lost = schedlog.next - seq > SCHEDLOG_NREC;
+    r = schedlog.rec[seq % SCHEDLOG_NREC];
+    release(&schedlog.lock);
+    if (lost)
+      continue; // overwritten while we were copying
+    if (either_copyout(1, addr + n * sizeof(r), &r, sizeof(r)) < 0)
+      return -1;
+    n++;
+  }
+  return n;
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -107,6 +170,7 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
   initlock(&readyq.lock, "readyq");
+  initlock(&schedlog.lock, "schedlog");
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -536,6 +600,7 @@ scheduler(void)
     acquire(&p->lock);
     if (p->state != RUNNABLE)
       panic("scheduler: queued proc not runnable");
+    schedlog_record(p);
     dprintf(DBG_SCHED, DBG_TRACE, "switching to pid %d (%s)\n", p->pid,
             p->name);
 

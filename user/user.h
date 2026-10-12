@@ -1,6 +1,7 @@
 #define SBRK_ERROR ((char *)-1)
 
 struct stat;
+struct schedrec;
 
 // system calls
 int fork(void);
@@ -28,6 +29,7 @@ int sync(void);
 uint64 debugctl(int, uint64);
 int setpriority(int);
 int getpriority(void);
+int schedlog(struct schedrec *, int);
 
 // ulib.c
 int stat(const char *, struct stat *);
