@@ -27,6 +27,60 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+#if DEFAULT_PRIORITY >= NB_PRIORITY_LEVELS
+#error "DEFAULT_PRIORITY must be below NB_PRIORITY_LEVELS"
+#endif
+
+// One FIFO ready queue per priority level, linked through p->next.
+// A process is on a queue exactly while its state is RUNNABLE.
+// readyq.lock is acquired after p->lock, never before it.
+struct {
+  struct spinlock lock;
+  struct proc *head[NB_PRIORITY_LEVELS];
+  struct proc *tail[NB_PRIORITY_LEVELS];
+} readyq;
+
+// Append p to the tail of the ready queue for its priority.
+// p->lock must be held and p->state must be RUNNABLE.
+static void
+enqueue(struct proc *p)
+{
+  int prio = p->priority;
+
+  if (prio < 0 || prio >= NB_PRIORITY_LEVELS)
+    panic("enqueue priority");
+
+  acquire(&readyq.lock);
+  p->next = 0;
+  if (readyq.tail[prio])
+    readyq.tail[prio]->next = p;
+  else
+    readyq.head[prio] = p;
+  readyq.tail[prio] = p;
+  release(&readyq.lock);
+}
+
+// Remove and return the head of the highest-priority non-empty
+// ready queue, or zero if every queue is empty.
+static struct proc *
+dequeue_highest(void)
+{
+  struct proc *p = 0;
+
+  acquire(&readyq.lock);
+  for (int prio = 0; prio < NB_PRIORITY_LEVELS; prio++) {
+    if ((p = readyq.head[prio]) != 0) {
+      readyq.head[prio] = p->next;
+      if (readyq.head[prio] == 0)
+        readyq.tail[prio] = 0;
+      p->next = 0;
+      break;
+    }
+  }
+  release(&readyq.lock);
+  return p;
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -52,6 +106,7 @@ procinit(void)
 
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&readyq.lock, "readyq");
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -127,6 +182,8 @@ found:
   p->pid = allocpid();
   dprintf(DBG_PROC, DBG_INFO, "allocated pid %d\n", p->pid);
   p->state = USED;
+  p->priority = DEFAULT_PRIORITY;
+  p->next = 0;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -173,6 +230,8 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->priority = 0;
+  p->next = 0;
   p->state = UNUSED;
 }
 
@@ -233,6 +292,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  enqueue(p);
 
   release(&p->lock);
 }
@@ -298,6 +358,9 @@ kfork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
+  // The child starts at its parent's priority.
+  np->priority = p->priority;
+
   pid = np->pid;
   dprintf(DBG_PROC, DBG_INFO, "child pid %d created, sz %lu\n", np->pid,
           np->sz);
@@ -310,6 +373,7 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  enqueue(np);
   release(&np->lock);
 
   return pid;
@@ -461,33 +525,30 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        dprintf(DBG_SCHED, DBG_TRACE, "switching to pid %d (%s)\n", p->pid,
-                p->name);
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
 
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
-    }
-    if (found == 0) {
+    if ((p = dequeue_highest()) == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
+      continue;
     }
+
+    acquire(&p->lock);
+    if (p->state != RUNNABLE)
+      panic("scheduler: queued proc not runnable");
+    dprintf(DBG_SCHED, DBG_TRACE, "switching to pid %d (%s)\n", p->pid,
+            p->name);
+
+    p->state = RUNNING;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    // Don't re-enable interrupts on release.
+    mycpu()->intena = 0;
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
+    release(&p->lock);
   }
 }
 
@@ -525,6 +586,7 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+  enqueue(p);
   sched();
   release(&p->lock);
 }
@@ -611,6 +673,7 @@ wakeup(void *chan)
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+        enqueue(p);
       }
     }
     release(&p->lock);
@@ -632,6 +695,7 @@ kkill(int pid)
       if (p->state == SLEEPING) {
         // Wake process from sleep().
         p->state = RUNNABLE;
+        enqueue(p);
       }
       release(&p->lock);
       dprintf(DBG_PROC, DBG_INFO, "killed pid %d\n", pid);
