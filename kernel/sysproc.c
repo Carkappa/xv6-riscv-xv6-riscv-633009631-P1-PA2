@@ -145,3 +145,18 @@ sys_debugctl(void)
     return -1;
   }
 }
+
+uint64
+sys_setpriority(void)
+{
+  int priority;
+
+  argint(0, &priority);
+  return setpriority(priority);
+}
+
+uint64
+sys_getpriority(void)
+{
+  return getpriority();
+}

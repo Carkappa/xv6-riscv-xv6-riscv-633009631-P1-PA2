@@ -104,6 +104,8 @@ extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_sync(void);
 extern uint64 sys_debugctl(void);
+extern uint64 sys_setpriority(void);
+extern uint64 sys_getpriority(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -132,6 +134,8 @@ static uint64 (*syscalls[])(void) = {
   [SYS_close]   = sys_close,
   [SYS_sync]    = sys_sync,
   [SYS_debugctl] = sys_debugctl,
+  [SYS_setpriority] = sys_setpriority,
+  [SYS_getpriority] = sys_getpriority,
 
   // clang-format on
 };

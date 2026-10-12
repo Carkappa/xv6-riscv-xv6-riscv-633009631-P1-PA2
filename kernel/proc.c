@@ -426,6 +426,7 @@ kexit(int status)
 
   // Give any children to init.
   int nreparented = reparent(p);
+  (void)nreparented; // only read by dprintf, which is empty at DEBUG=0
 
   // Parent might be sleeping in wait().
   wakeup(p->parent);
@@ -589,6 +590,41 @@ yield(void)
   enqueue(p);
   sched();
   release(&p->lock);
+}
+
+
+int
+setpriority(int priority)
+{
+  struct proc *p = myproc();
+
+  if (priority < 0 || priority >= NB_PRIORITY_LEVELS)
+    return -1;
+
+  acquire(&p->lock);
+  if (p->priority != priority) {
+    // The caller is RUNNING, so it is on no ready queue; it joins
+    // the tail of the queue for its new priority.
+    p->priority = priority;
+    p->state = RUNNABLE;
+    enqueue(p);
+    sched();
+  }
+  release(&p->lock);
+  return 0;
+}
+
+// Return the calling process's priority.
+int
+getpriority(void)
+{
+  struct proc *p = myproc();
+  int priority;
+
+  acquire(&p->lock);
+  priority = p->priority;
+  release(&p->lock);
+  return priority;
 }
 
 // A fork child's very first scheduling by scheduler()
